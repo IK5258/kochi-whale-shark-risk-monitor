@@ -14,6 +14,38 @@ st.set_page_config(
     layout="wide",
 )
 
+
+def check_password():
+    try:
+        app_password = st.secrets["APP_PASSWORD"]
+    except Exception:
+        st.error("APP_PASSWORD が設定されていません。Streamlit Cloud の Secrets に設定してください。")
+        st.stop()
+
+    if "password_ok" not in st.session_state:
+        st.session_state["password_ok"] = False
+
+    if st.session_state["password_ok"]:
+        return
+
+    st.title("Kochi Whale Shark Risk Monitor")
+    st.caption("このアプリの閲覧にはパスワードが必要です。")
+
+    password = st.text_input("Password", type="password")
+
+    if password:
+        if password == app_password:
+            st.session_state["password_ok"] = True
+            st.rerun()
+        else:
+            st.error("パスワードが違います。")
+            st.stop()
+    else:
+        st.stop()
+
+
+check_password()
+
 st.title("Kochi Whale Shark Risk Monitor")
 st.caption("高知県沿岸の定置網におけるジンベエザメ出現リスクモニター v0.1")
 
