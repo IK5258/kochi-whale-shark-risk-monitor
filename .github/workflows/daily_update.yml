@@ -16,6 +16,8 @@ jobs:
     env:
       CMEMS_USERNAME: ${{ secrets.CMEMS_USERNAME }}
       CMEMS_PASSWORD: ${{ secrets.CMEMS_PASSWORD }}
+      COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.CMEMS_USERNAME }}
+      COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.CMEMS_PASSWORD }}
 
     steps:
       - name: Checkout repository
@@ -30,6 +32,23 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: Check Python packages
+        run: |
+          python - <<'PY'
+          import h5py
+          import h5netcdf
+          import xarray
+          import copernicusmarine
+          import numpy
+          import pandas
+          print("h5py OK:", h5py.__version__)
+          print("h5netcdf OK:", h5netcdf.__version__)
+          print("xarray OK:", xarray.__version__)
+          print("copernicusmarine OK:", copernicusmarine.__version__)
+          print("numpy OK:", numpy.__version__)
+          print("pandas OK:", pandas.__version__)
+          PY
 
       - name: Set up R
         uses: r-lib/actions/setup-r@v2
