@@ -5,6 +5,8 @@ import pydeck as pdk
 
 
 APP_ROOT = Path(__file__).resolve().parent
+
+FORECAST_PATH = APP_ROOT / "outputs" / "forecast_risk.csv"
 RISK_PATH = APP_ROOT / "outputs" / "latest_risk.csv"
 LOG_PATH = APP_ROOT / "outputs" / "update_log.csv"
 
@@ -47,14 +49,18 @@ def check_password():
 check_password()
 
 st.title("Kochi Whale Shark Risk Monitor")
-st.caption("高知県沿岸の定置網におけるジンベエザメ出現リスクモニター v0.1")
+st.caption("高知県沿岸の定置網におけるジンベエザメ出現リスクモニター v0.3")
 
 
 @st.cache_data
 def load_risk():
-    if not RISK_PATH.exists():
-        return None
-    return pd.read_csv(RISK_PATH)
+    if FORECAST_PATH.exists():
+        return pd.read_csv(FORECAST_PATH), "forecast_risk.csv"
+
+    if RISK_PATH.exists():
+        return pd.read_csv(RISK_PATH), "latest_risk.csv"
+
+    return None, None
 
 
 @st.cache_data
@@ -64,31 +70,64 @@ def load_log():
     return pd.read_csv(LOG_PATH)
 
 
-risk = load_risk()
+risk_all, source_file = load_risk()
 log = load_log()
 
-if risk is None:
-    st.error("latest_risk.csv が見つかりません。")
+if risk_all is None:
+    st.error("risk csv が見つかりません。forecast_risk.csv または latest_risk.csv を確認してください。")
     st.stop()
 
-required_cols = ["NetID", "Latitude", "Longitude", "core_risk", "integrated_risk"]
-missing = [c for c in required_cols if c not in risk.columns]
+risk_all["NetID"] = risk_all["NetID"].astype(str)
 
-if missing:
-    st.error(f"latest_risk.csv に必要な列がありません: {missing}")
-    st.stop()
+if "net_name" not in risk_all.columns:
+    risk_all["net_name"] = "NetID " + risk_all["NetID"]
 
-risk["NetID"] = risk["NetID"].astype(str)
+if "net_label" not in risk_all.columns:
+    risk_all["net_label"] = risk_all["net_name"] + "（NetID " + risk_all["NetID"] + "）"
 
-if "net_name" not in risk.columns:
-    risk["net_name"] = "NetID " + risk["NetID"]
+if "offset_days" not in risk_all.columns:
+    risk_all["offset_days"] = 0
 
-if "net_label" not in risk.columns:
-    risk["net_label"] = risk["net_name"] + "（NetID " + risk["NetID"] + "）"
+if "target_date" not in risk_all.columns:
+    if "date" in risk_all.columns:
+        risk_all["target_date"] = risk_all["date"]
+    else:
+        risk_all["target_date"] = "Unknown"
 
-has_kuroshio = "kuroshio_dist_km" in risk.columns and risk["kuroshio_dist_km"].notna().any()
+risk_all["offset_days"] = pd.to_numeric(risk_all["offset_days"], errors="coerce").fillna(0).astype(int)
+
+available_offsets = sorted(risk_all["offset_days"].unique().tolist())
+
+offset_label_map = {
+    0: "今日",
+    3: "3日後",
+    7: "7日後",
+    10: "10日後",
+    14: "14日後",
+    30: "30日後",
+}
+
+offset_labels = [
+    offset_label_map.get(x, f"{x}日後")
+    for x in available_offsets
+]
+
+label_to_offset = {
+    offset_label_map.get(x, f"{x}日後"): x
+    for x in available_offsets
+}
 
 st.sidebar.header("表示設定")
+
+selected_label = st.sidebar.radio(
+    "予測日",
+    offset_labels,
+    index=0,
+)
+
+selected_offset = label_to_offset[selected_label]
+
+risk = risk_all[risk_all["offset_days"] == selected_offset].copy()
 
 risk_mode = st.sidebar.radio(
     "表示するリスク",
@@ -98,11 +137,14 @@ risk_mode = st.sidebar.radio(
 
 show_context = st.sidebar.checkbox("環境proxyを表示", value=True)
 
-latest_date = str(risk["date"].iloc[0]) if "date" in risk.columns else "Unknown"
+has_kuroshio = "kuroshio_dist_km" in risk.columns and risk["kuroshio_dist_km"].notna().any()
+
+target_date = str(risk["target_date"].iloc[0]) if "target_date" in risk.columns else "Unknown"
 latest_jday = int(risk["Jday"].iloc[0]) if "Jday" in risk.columns else None
 
 st.sidebar.markdown("---")
-st.sidebar.write(f"Date: {latest_date}")
+st.sidebar.write(f"Source: {source_file}")
+st.sidebar.write(f"Target date: {target_date}")
 
 if latest_jday is not None:
     st.sidebar.write(f"Jday: {latest_jday}")
@@ -124,25 +166,33 @@ elif risk_mode == "Integrated risk":
 else:
     value_col = "maxent_suitability" if "maxent_suitability" in risk.columns else "core_risk"
 
+required_cols = ["NetID", "Latitude", "Longitude", value_col]
+missing = [c for c in required_cols if c not in risk.columns]
+
+if missing:
+    st.error(f"risk csv に必要な列がありません: {missing}")
+    st.stop()
+
 risk[value_col] = pd.to_numeric(risk[value_col], errors="coerce")
 risk = risk.dropna(subset=["Latitude", "Longitude", value_col])
 
 top = risk.sort_values(value_col, ascending=False).iloc[0]
 
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 
-col1.metric("Top set net", top["net_name"])
-col2.metric("Risk score", f"{top[value_col]:.3f}")
+col1.metric("Prediction", selected_label)
+col2.metric("Top set net", top["net_name"])
+col3.metric("Risk score", f"{top[value_col]:.3f}")
 
 if "SST" in risk.columns:
-    col3.metric("SST", f"{float(top['SST']):.1f} ℃")
+    col4.metric("SST", f"{float(top['SST']):.1f} ℃")
 else:
-    col3.metric("SST", "NA")
+    col4.metric("SST", "NA")
 
 if "depth_m" in risk.columns:
-    col4.metric("Depth", f"{float(top['depth_m']):.0f} m")
+    col5.metric("Depth", f"{float(top['depth_m']):.0f} m")
 else:
-    col4.metric("Depth", "NA")
+    col5.metric("Depth", "NA")
 
 st.markdown("### Risk map")
 
@@ -176,6 +226,7 @@ plot_df["color"] = plot_df["plot_scaled"].apply(risk_color)
 
 tooltip_html = "<b>定置網:</b> {net_name}<br>"
 tooltip_html += "<b>NetID:</b> {NetID}<br>"
+tooltip_html += "<b>予測日:</b> {target_date}<br>"
 tooltip_html += f"<b>{value_col}:</b> " + "{" + value_col + "}<br>"
 
 for c in [
@@ -184,9 +235,9 @@ for c in [
     "integrated_risk",
     "SST",
     "depth_m",
-    "upwelling_context",
     "kuroshio_dist_km",
     "kuroshio_context",
+    "upwelling_context",
 ]:
     if c in plot_df.columns and c != value_col:
         tooltip_html += f"<b>{c}:</b> " + "{" + c + "}<br>"
@@ -224,22 +275,22 @@ st.markdown("### Risk ranking")
 display_cols = [
     "net_name",
     "NetID",
-    "date",
+    "target_date",
+    "offset_days",
     "Jday",
     "SST",
+    "SST_source",
     "depth_m",
     "core_risk",
     "core_risk_class",
     "maxent_suitability",
+    "kuroshio_dist_km",
+    "kuroshio_context",
     "upwelling_context",
     "integrated_risk",
     "integrated_risk_class",
     "integrated_formula",
 ]
-
-if has_kuroshio:
-    display_cols.insert(10, "kuroshio_dist_km")
-    display_cols.insert(11, "kuroshio_context")
 
 display_cols = [c for c in display_cols if c in risk.columns]
 
@@ -261,6 +312,7 @@ if show_context:
 
         if "upwelling_context" in risk.columns:
             up_cols = ["net_name", "NetID", "upwelling_context"]
+
             if "upwelling_proxy" in risk.columns:
                 up_cols.insert(2, "upwelling_proxy")
 
@@ -288,43 +340,23 @@ if show_context:
 
             st.dataframe(tmp, use_container_width=True, hide_index=True)
         else:
-            st.info("黒潮距離データはまだ入っていません。v0.2で追加予定です。")
+            st.info("黒潮距離データはまだ入っていません。")
 
 st.markdown("---")
 st.markdown("### Model note")
 
-if has_kuroshio:
-    st.write(
-        """
-        Core risk は GAM による主リスクです。
-        モデル式は `presence ~ s(Jday, bs="cc") + s(SST) + s(depth_m)` です。
+st.write(
+    """
+    Core risk は GAM による主リスクです。
+    モデル式は `presence ~ s(Jday, bs="cc") + s(SST) + s(depth_m)` です。
 
-        Integrated risk は実験的な総合スコアです。
+    Integrated risk は実験的な総合スコアです。
 
-        Integrated risk = 0.75 × Core GAM risk + 0.15 × Kuroshio context + 0.10 × Upwelling context
+    Integrated risk = 0.75 × Core GAM risk + 0.15 × Kuroshio context + 0.10 × Upwelling context
 
-        黒潮proxyは、定置網から黒潮軸までの最短距離に基づく補助的な生態文脈です。
-        Core GAM risk を主指標として扱い、Integrated risk は補助的に解釈してください。
-        """
-    )
-else:
-    st.write(
-        """
-        Core risk は GAM による主リスクです。
-        モデル式は `presence ~ s(Jday, bs="cc") + s(SST) + s(depth_m)` です。
+    現在の将来予測では、SSTは実測予報値ではなく、過去データから推定した同時期の季節値を使っています。
+    そのため、3〜30日後の予測は「季節性にもとづく参考リスク」として解釈してください。
 
-        MaxEnt suitability は補助的な出現適性指標です。
-
-        Integrated risk は実験的な総合スコアです。
-        現在は Core GAM risk を主軸に、湧昇proxyのみを補助的に加えています。
-
-        Integrated risk = 0.85 × Core GAM risk + 0.15 × Upwelling context
-
-        黒潮proxyは、過去解析では生態学的に関与している可能性が示されましたが、
-        現在のアプリにはまだ実装していません。
-        今後、黒潮軸距離データを追加すると表示できます。
-
-        `integrated_risk_class` は、その日の定置網間での相対ランクです。
-        絶対的な危険度ではなく、当日どの定置網が相対的に高いかを見るための指標です。
-        """
-    )
+    Core GAM risk を主指標として扱い、Integrated risk は補助的に解釈してください。
+    """
+)
