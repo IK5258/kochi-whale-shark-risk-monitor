@@ -2,6 +2,7 @@ name: Daily whale shark risk update
 
 on:
   schedule:
+    # JST 06:00 = UTC 21:00
     - cron: "0 21 * * *"
   workflow_dispatch:
 
@@ -11,6 +12,10 @@ permissions:
 jobs:
   update-risk:
     runs-on: ubuntu-latest
+
+    env:
+      CMEMS_USERNAME: ${{ secrets.CMEMS_USERNAME }}
+      CMEMS_PASSWORD: ${{ secrets.CMEMS_PASSWORD }}
 
     steps:
       - name: Checkout repository
@@ -37,18 +42,48 @@ jobs:
         run: |
           python scripts/make_net_master.py
 
-      - name: Update daily environment
+      - name: Update Kuroshio axis from JCG
         run: |
-          python scripts/update_daily_env.py
+          python scripts/update_kuroshio_axis_from_jcg.py
 
-      - name: Predict risk
+      - name: Add Kuroshio distance
         run: |
-          Rscript scripts/predict_risk.R
+          python scripts/add_kuroshio_distance.py
+
+      - name: Make seasonal forecast environment
+        run: |
+          python scripts/update_forecast_env.py
+
+      - name: Update forecast environment with Copernicus
+        run: |
+          python scripts/update_forecast_env_with_copernicus.py
+
+      - name: Predict forecast risk
+        run: |
+          Rscript scripts/predict_forecast_risk.R
 
       - name: Commit updated outputs
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
-          git add data/net_master.csv outputs/current_env.csv outputs/latest_risk.csv outputs/update_log.csv outputs/model_metrics.csv
+
+          git rm -r --cached data/raw_copernicus_forecast || true
+          git rm -r --cached data/raw_kuroshio || true
+          git rm --cached "*.nc" || true
+
+          git add .github/workflows/daily_update.yml
+          git add requirements.txt
+          git add .gitignore
+
+          git add data/kuroshio_axis.csv
+          git add data/net_master.csv
+
+          git add outputs/current_env.csv
+          git add outputs/latest_risk.csv
+          git add outputs/forecast_env.csv
+          git add outputs/forecast_risk.csv
+          git add outputs/model_metrics.csv
+          git add outputs/update_log.csv || true
+
           git commit -m "Daily whale shark risk update" || echo "No changes to commit"
           git push

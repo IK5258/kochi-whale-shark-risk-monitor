@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+data/raw_copernicus_forecast/
+data/raw_kuroshio/*.zip
+*.nc
