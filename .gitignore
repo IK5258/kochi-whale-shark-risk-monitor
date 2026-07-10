@@ -5,3 +5,9 @@ __pycache__/
 data/raw_copernicus_forecast/
 data/raw_kuroshio/*.zip
 *.nc
+
+# Local backups
+app_backup_*.py
+
+# Intermediate historical environment data
+outputs/historical_env_daily.csv
