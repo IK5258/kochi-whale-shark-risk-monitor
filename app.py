@@ -1,5 +1,7 @@
+
 from pathlib import Path
 import pandas as pd
+import numpy as np
 import streamlit as st
 import pydeck as pdk
 
@@ -9,6 +11,10 @@ APP_ROOT = Path(__file__).resolve().parent
 FORECAST_PATH = APP_ROOT / "outputs" / "forecast_risk.csv"
 RISK_PATH = APP_ROOT / "outputs" / "latest_risk.csv"
 LOG_PATH = APP_ROOT / "outputs" / "update_log.csv"
+
+HIST_DAILY_PATH = APP_ROOT / "outputs" / "historical_risk_daily.csv"
+HIST_MONTHLY_PATH = APP_ROOT / "outputs" / "historical_risk_monthly.csv"
+HIST_YEARLY_PATH = APP_ROOT / "outputs" / "historical_risk_yearly.csv"
 
 st.set_page_config(
     page_title="Kochi Whale Shark Risk Monitor",
@@ -46,321 +52,417 @@ def check_password():
         st.stop()
 
 
-check_password()
-
-st.title("Kochi Whale Shark Risk Monitor")
-st.caption("高知県沿岸の定置網におけるジンベエザメ出現リスクモニター v0.3")
+@st.cache_data
+def read_csv_if_exists(path):
+    if path.exists():
+        return pd.read_csv(path)
+    return pd.DataFrame()
 
 
 @st.cache_data
-def load_risk():
-    if FORECAST_PATH.exists():
-        return pd.read_csv(FORECAST_PATH), "forecast_risk.csv"
-
-    if RISK_PATH.exists():
-        return pd.read_csv(RISK_PATH), "latest_risk.csv"
-
-    return None, None
-
-
-@st.cache_data
-def load_log():
-    if not LOG_PATH.exists():
-        return None
-    return pd.read_csv(LOG_PATH)
+def load_all_data():
+    forecast = read_csv_if_exists(FORECAST_PATH)
+    latest = read_csv_if_exists(RISK_PATH)
+    hist_daily = read_csv_if_exists(HIST_DAILY_PATH)
+    hist_monthly = read_csv_if_exists(HIST_MONTHLY_PATH)
+    hist_yearly = read_csv_if_exists(HIST_YEARLY_PATH)
+    return forecast, latest, hist_daily, hist_monthly, hist_yearly
 
 
-risk_all, source_file = load_risk()
-log = load_log()
+def risk_class_to_color(cls):
+    cls = str(cls)
 
-if risk_all is None:
-    st.error("risk csv が見つかりません。forecast_risk.csv または latest_risk.csv を確認してください。")
-    st.stop()
+    if cls == "Very high":
+        return [215, 25, 28, 210]
+    if cls == "High":
+        return [253, 174, 97, 210]
+    if cls == "Moderate":
+        return [255, 255, 191, 210]
+    if cls == "Low":
+        return [145, 191, 219, 210]
 
-risk_all["NetID"] = risk_all["NetID"].astype(str)
+    return [180, 180, 180, 180]
 
-if "net_name" not in risk_all.columns:
-    risk_all["net_name"] = "NetID " + risk_all["NetID"]
 
-if "net_label" not in risk_all.columns:
-    risk_all["net_label"] = risk_all["net_name"] + "（NetID " + risk_all["NetID"] + "）"
+def get_risk_col(df):
+    for c in ["integrated_risk", "core_risk", "maxent_suitability"]:
+        if c in df.columns:
+            return c
+    return None
 
-if "offset_days" not in risk_all.columns:
-    risk_all["offset_days"] = 0
 
-if "target_date" not in risk_all.columns:
-    if "date" in risk_all.columns:
-        risk_all["target_date"] = risk_all["date"]
+def get_class_col(df):
+    for c in ["integrated_risk_class", "core_risk_class"]:
+        if c in df.columns:
+            return c
+    return None
+
+
+def prepare_map_df(df):
+    d = df.copy()
+
+    if "Latitude" not in d.columns or "Longitude" not in d.columns:
+        return pd.DataFrame()
+
+    d["Latitude"] = pd.to_numeric(d["Latitude"], errors="coerce")
+    d["Longitude"] = pd.to_numeric(d["Longitude"], errors="coerce")
+
+    d = d.dropna(subset=["Latitude", "Longitude"]).copy()
+
+    risk_col = get_risk_col(d)
+    class_col = get_class_col(d)
+
+    if risk_col is None:
+        d["_risk_value"] = np.nan
     else:
-        risk_all["target_date"] = "Unknown"
+        d["_risk_value"] = pd.to_numeric(d[risk_col], errors="coerce")
 
-risk_all["offset_days"] = pd.to_numeric(risk_all["offset_days"], errors="coerce").fillna(0).astype(int)
-
-available_offsets = sorted(risk_all["offset_days"].unique().tolist())
-
-offset_label_map = {
-    0: "今日",
-    3: "3日後",
-    7: "7日後",
-    10: "10日後",
-    14: "14日後",
-    30: "30日後",
-}
-
-offset_labels = [
-    offset_label_map.get(x, f"{x}日後")
-    for x in available_offsets
-]
-
-label_to_offset = {
-    offset_label_map.get(x, f"{x}日後"): x
-    for x in available_offsets
-}
-
-st.sidebar.header("表示設定")
-
-selected_label = st.sidebar.radio(
-    "予測日",
-    offset_labels,
-    index=0,
-)
-
-selected_offset = label_to_offset[selected_label]
-
-risk = risk_all[risk_all["offset_days"] == selected_offset].copy()
-
-risk_mode = st.sidebar.radio(
-    "表示するリスク",
-    ["Core GAM risk", "Integrated risk", "MaxEnt suitability"],
-    index=0,
-)
-
-show_context = st.sidebar.checkbox("環境proxyを表示", value=True)
-
-has_kuroshio = "kuroshio_dist_km" in risk.columns and risk["kuroshio_dist_km"].notna().any()
-
-target_date = str(risk["target_date"].iloc[0]) if "target_date" in risk.columns else "Unknown"
-latest_jday = int(risk["Jday"].iloc[0]) if "Jday" in risk.columns else None
-
-st.sidebar.markdown("---")
-st.sidebar.write(f"Source: {source_file}")
-st.sidebar.write(f"Target date: {target_date}")
-
-if latest_jday is not None:
-    st.sidebar.write(f"Jday: {latest_jday}")
-
-if has_kuroshio:
-    st.sidebar.success("Kuroshio context: active")
-else:
-    st.sidebar.info("Kuroshio context: not implemented")
-
-if log is not None and len(log) > 0:
-    st.sidebar.markdown("---")
-    st.sidebar.write("Last update")
-    st.sidebar.dataframe(log.tail(3), use_container_width=True)
-
-if risk_mode == "Core GAM risk":
-    value_col = "core_risk"
-elif risk_mode == "Integrated risk":
-    value_col = "integrated_risk"
-else:
-    value_col = "maxent_suitability" if "maxent_suitability" in risk.columns else "core_risk"
-
-required_cols = ["NetID", "Latitude", "Longitude", value_col]
-missing = [c for c in required_cols if c not in risk.columns]
-
-if missing:
-    st.error(f"risk csv に必要な列がありません: {missing}")
-    st.stop()
-
-risk[value_col] = pd.to_numeric(risk[value_col], errors="coerce")
-risk = risk.dropna(subset=["Latitude", "Longitude", value_col])
-
-top = risk.sort_values(value_col, ascending=False).iloc[0]
-
-col1, col2, col3, col4, col5 = st.columns(5)
-
-col1.metric("Prediction", selected_label)
-col2.metric("Top set net", top["net_name"])
-col3.metric("Risk score", f"{top[value_col]:.3f}")
-
-if "SST" in risk.columns:
-    col4.metric("SST", f"{float(top['SST']):.1f} ℃")
-else:
-    col4.metric("SST", "NA")
-
-if "depth_m" in risk.columns:
-    col5.metric("Depth", f"{float(top['depth_m']):.0f} m")
-else:
-    col5.metric("Depth", "NA")
-
-st.markdown("### Risk map")
-
-
-def risk_color(x):
-    if pd.isna(x):
-        return [180, 180, 180]
-    if x >= 0.75:
-        return [220, 40, 40]
-    elif x >= 0.50:
-        return [240, 150, 40]
-    elif x >= 0.25:
-        return [240, 220, 80]
+    if class_col is None:
+        d["_risk_class"] = "Unknown"
     else:
-        return [60, 160, 90]
+        d["_risk_class"] = d[class_col].fillna("Unknown").astype(str)
+
+    color_values = d["_risk_class"].apply(risk_class_to_color)
+    color_df = pd.DataFrame(color_values.tolist(), columns=["r", "g", "b", "a"], index=d.index)
+
+    d = pd.concat([d, color_df], axis=1)
+
+    risk_for_radius = d["_risk_value"].fillna(0).clip(0, 1)
+    d["radius"] = 3500 + risk_for_radius * 8500
+
+    if "net_label" not in d.columns:
+        if "NetID" in d.columns:
+            d["net_label"] = "NetID " + d["NetID"].astype(str)
+        else:
+            d["net_label"] = "Unknown net"
+
+    if "date" not in d.columns:
+        if "target_date" in d.columns:
+            d["date"] = d["target_date"]
+        else:
+            d["date"] = ""
+
+    return d
 
 
-plot_df = risk.copy()
-plot_df["plot_value"] = plot_df[value_col]
+def show_metric_cards(df):
+    risk_col = get_risk_col(df)
+    class_col = get_class_col(df)
 
-vmin = plot_df["plot_value"].min()
-vmax = plot_df["plot_value"].max()
+    c1, c2, c3, c4 = st.columns(4)
 
-if vmax > vmin:
-    plot_df["plot_scaled"] = (plot_df["plot_value"] - vmin) / (vmax - vmin)
-else:
-    plot_df["plot_scaled"] = 0.5
+    with c1:
+        st.metric("表示地点数", f"{len(df):,}")
 
-plot_df["radius"] = 2500 + plot_df["plot_scaled"] * 6000
-plot_df["color"] = plot_df["plot_scaled"].apply(risk_color)
+    with c2:
+        if risk_col is not None:
+            st.metric("平均リスク", f"{pd.to_numeric(df[risk_col], errors='coerce').mean():.3f}")
+        else:
+            st.metric("平均リスク", "NA")
 
-tooltip_html = "<b>定置網:</b> {net_name}<br>"
-tooltip_html += "<b>NetID:</b> {NetID}<br>"
-tooltip_html += "<b>予測日:</b> {target_date}<br>"
-tooltip_html += f"<b>{value_col}:</b> " + "{" + value_col + "}<br>"
+    with c3:
+        if risk_col is not None:
+            st.metric("最大リスク", f"{pd.to_numeric(df[risk_col], errors='coerce').max():.3f}")
+        else:
+            st.metric("最大リスク", "NA")
 
-for c in [
-    "core_risk",
-    "maxent_suitability",
-    "integrated_risk",
-    "SST",
-    "depth_m",
-    "kuroshio_dist_km",
-    "kuroshio_context",
-    "upwelling_context",
-]:
-    if c in plot_df.columns and c != value_col:
-        tooltip_html += f"<b>{c}:</b> " + "{" + c + "}<br>"
+    with c4:
+        if class_col is not None:
+            vc = df[class_col].value_counts()
+            top_class = vc.index[0] if len(vc) > 0 else "NA"
+            st.metric("最多リスク区分", str(top_class))
+        else:
+            st.metric("最多リスク区分", "NA")
 
-layer = pdk.Layer(
-    "ScatterplotLayer",
-    data=plot_df,
-    get_position="[Longitude, Latitude]",
-    get_radius="radius",
-    get_fill_color="color",
-    pickable=True,
-    opacity=0.75,
-)
 
-view_state = pdk.ViewState(
-    latitude=float(plot_df["Latitude"].mean()),
-    longitude=float(plot_df["Longitude"].mean()),
-    zoom=7.5,
-    pitch=0,
-)
+def show_risk_map(df, title="Risk map"):
+    d = prepare_map_df(df)
 
-deck = pdk.Deck(
-    layers=[layer],
-    initial_view_state=view_state,
-    tooltip={
-        "html": tooltip_html,
-        "style": {"backgroundColor": "white", "color": "black"},
-    },
-)
+    if d.empty:
+        st.warning("地図表示に必要な Latitude / Longitude がありません。")
+        return
 
-st.pydeck_chart(deck, use_container_width=True)
+    center_lat = float(d["Latitude"].mean())
+    center_lon = float(d["Longitude"].mean())
 
-st.markdown("### Risk ranking")
+    layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=d,
+        get_position="[Longitude, Latitude]",
+        get_fill_color="[r, g, b, a]",
+        get_line_color=[0, 0, 0, 160],
+        get_radius="radius",
+        pickable=True,
+        auto_highlight=True,
+    )
 
-display_cols = [
-    "net_name",
-    "NetID",
-    "target_date",
-    "offset_days",
-    "Jday",
-    "SST",
-    "SST_source",
-    "forecast_ocean_mode",
-    "current_speed_forecast",
-    "wo_forecast",
-    "kuroshio_source",
-    "depth_m",
-    "core_risk",
-    "core_risk_class",
-    "maxent_suitability",
-    "kuroshio_dist_km",
-    "kuroshio_context",
-    "upwelling_context",
-    "integrated_risk",
-    "integrated_risk_class",
-    "integrated_formula",
-]
+    view_state = pdk.ViewState(
+        latitude=center_lat,
+        longitude=center_lon,
+        zoom=7.3,
+        pitch=0,
+    )
 
-display_cols = [c for c in display_cols if c in risk.columns]
+    tooltip = {
+        "html": """
+        <b>{net_label}</b><br/>
+        Date: {date}<br/>
+        Risk: {_risk_value}<br/>
+        Class: {_risk_class}<br/>
+        SST: {SST}<br/>
+        Depth: {depth_m} m
+        """,
+        "style": {
+            "backgroundColor": "white",
+            "color": "black"
+        }
+    }
 
-rank_df = risk.sort_values(value_col, ascending=False)[display_cols].copy()
+    deck = pdk.Deck(
+        layers=[layer],
+        initial_view_state=view_state,
+        tooltip=tooltip,
+        map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+    )
 
-for c in rank_df.columns:
-    if rank_df[c].dtype.kind in "fc":
-        rank_df[c] = rank_df[c].round(3)
+    st.subheader(title)
+    st.pydeck_chart(deck, use_container_width=True)
 
-st.dataframe(rank_df, use_container_width=True, hide_index=True)
 
-if show_context:
-    st.markdown("### Ecological context")
+def show_table(df):
+    cols = [
+        "date",
+        "target_date",
+        "period_label",
+        "forecast_label",
+        "NetID",
+        "net_name",
+        "net_label",
+        "Latitude",
+        "Longitude",
+        "Jday",
+        "SST",
+        "depth_m",
+        "core_risk",
+        "core_percentile",
+        "core_risk_class",
+        "maxent_suitability",
+        "integrated_risk",
+        "integrated_percentile_today",
+        "integrated_risk_class",
+        "model_main",
+        "note",
+    ]
+
+    use_cols = [c for c in cols if c in df.columns]
+
+    risk_col = get_risk_col(df)
+
+    if risk_col is not None:
+        show_df = df.sort_values(risk_col, ascending=False)
+    else:
+        show_df = df.copy()
+
+    st.dataframe(show_df[use_cols], use_container_width=True, hide_index=True)
+
+
+def parse_date_col(df, col="date"):
+    d = df.copy()
+
+    if col not in d.columns:
+        if "target_date" in d.columns:
+            col = "target_date"
+        elif "Date" in d.columns:
+            col = "Date"
+        else:
+            return d, None
+
+    d["_date"] = pd.to_datetime(d[col], errors="coerce").dt.date
+
+    return d, "_date"
+
+
+def show_current_forecast_tab(forecast, latest):
+    st.header("現在・予報リスク")
+
+    if not forecast.empty:
+        df, date_col = parse_date_col(forecast, "target_date")
+
+        st.caption("forecast_risk.csv を表示しています。")
+
+        if date_col is not None:
+            dates = sorted(df[date_col].dropna().unique())
+
+            selected_date = st.selectbox(
+                "表示日を選択",
+                dates,
+                index=0,
+                key="forecast_date_select"
+            )
+
+            show = df[df[date_col] == selected_date].copy()
+        else:
+            show = df.copy()
+
+        if "forecast_label" in show.columns:
+            labels = show["forecast_label"].dropna().unique().tolist()
+            st.caption(" / ".join(map(str, labels)))
+
+        show_metric_cards(show)
+        show_risk_map(show, "Current / forecast whale shark risk")
+        show_table(show)
+
+    elif not latest.empty:
+        st.caption("latest_risk.csv を表示しています。")
+        show = latest.copy()
+        show_metric_cards(show)
+        show_risk_map(show, "Latest whale shark risk")
+        show_table(show)
+
+    else:
+        st.warning("forecast_risk.csv または latest_risk.csv が見つかりません。")
+
+
+def show_historical_daily_tab(hist_daily):
+    st.header("過去予測：日別")
+
+    if hist_daily.empty:
+        st.warning("historical_risk_daily.csv が見つかりません。")
+        return
+
+    df, date_col = parse_date_col(hist_daily, "date")
+
+    dates = sorted(df[date_col].dropna().unique())
+
+    default_index = len(dates) - 1
+
+    selected_date = st.date_input(
+        "日付を選択",
+        value=dates[default_index],
+        min_value=dates[0],
+        max_value=dates[-1],
+        key="hist_daily_date_input"
+    )
+
+    show = df[df[date_col] == selected_date].copy()
+
+    st.caption("Historical daily risk based on OISST, Jday, and depth.")
+    show_metric_cards(show)
+    show_risk_map(show, f"Historical daily risk: {selected_date}")
+    show_table(show)
+
+
+def show_historical_monthly_tab(hist_monthly):
+    st.header("過去予測：月別")
+
+    if hist_monthly.empty:
+        st.warning("historical_risk_monthly.csv が見つかりません。")
+        return
+
+    df = hist_monthly.copy()
+    df["Year"] = pd.to_numeric(df["Year"], errors="coerce").astype("Int64")
+    df["Month"] = pd.to_numeric(df["Month"], errors="coerce").astype("Int64")
+
+    years = sorted(df["Year"].dropna().astype(int).unique())
 
     c1, c2 = st.columns(2)
 
     with c1:
-        st.subheader("Upwelling proxy")
+        selected_year = st.selectbox("年を選択", years, index=len(years) - 1, key="hist_month_year_select")
 
-        if "upwelling_context" in risk.columns:
-            up_cols = ["net_name", "NetID", "upwelling_context"]
-
-            if "upwelling_proxy" in risk.columns:
-                up_cols.insert(2, "upwelling_proxy")
-
-            tmp = risk[up_cols].copy()
-            tmp = tmp.sort_values("upwelling_context", ascending=False)
-
-            for c in tmp.columns:
-                if tmp[c].dtype.kind in "fc":
-                    tmp[c] = tmp[c].round(3)
-
-            st.dataframe(tmp, use_container_width=True, hide_index=True)
-        else:
-            st.info("upwelling_context がありません。")
+    months = sorted(df[df["Year"] == selected_year]["Month"].dropna().astype(int).unique())
 
     with c2:
-        st.subheader("Kuroshio proxy")
+        selected_month = st.selectbox("月を選択", months, index=0, key="hist_month_month_select")
 
-        if has_kuroshio:
-            tmp = risk[["net_name", "NetID", "kuroshio_dist_km", "kuroshio_context"]].copy()
-            tmp = tmp.sort_values("kuroshio_context", ascending=False)
+    show = df[
+        (df["Year"] == selected_year) &
+        (df["Month"] == selected_month)
+    ].copy()
 
-            for c in tmp.columns:
-                if tmp[c].dtype.kind in "fc":
-                    tmp[c] = tmp[c].round(3)
+    st.caption("Monthly historical risk is the mean of daily historical risks.")
+    show_metric_cards(show)
+    show_risk_map(show, f"Historical monthly risk: {selected_year}-{selected_month:02d}")
+    show_table(show)
 
-            st.dataframe(tmp, use_container_width=True, hide_index=True)
+
+def show_historical_yearly_tab(hist_yearly):
+    st.header("過去予測：年別")
+
+    if hist_yearly.empty:
+        st.warning("historical_risk_yearly.csv が見つかりません。")
+        return
+
+    df = hist_yearly.copy()
+    df["Year"] = pd.to_numeric(df["Year"], errors="coerce").astype("Int64")
+
+    years = sorted(df["Year"].dropna().astype(int).unique())
+
+    selected_year = st.selectbox("年を選択", years, index=len(years) - 1, key="hist_year_year_select")
+
+    show = df[df["Year"] == selected_year].copy()
+
+    st.caption("Yearly historical risk is the mean of daily historical risks.")
+    show_metric_cards(show)
+    show_risk_map(show, f"Historical yearly risk: {selected_year}")
+    show_table(show)
+
+
+def show_update_log():
+    with st.expander("Update log / data status"):
+        if LOG_PATH.exists():
+            log = pd.read_csv(LOG_PATH)
+            st.dataframe(log, use_container_width=True, hide_index=True)
         else:
-            st.info("黒潮距離データはまだ入っていません。")
+            st.caption("update_log.csv が見つかりません。")
 
-st.markdown("---")
-st.markdown("### Model note")
+        st.write("Files")
+        files = {
+            "forecast_risk.csv": FORECAST_PATH.exists(),
+            "latest_risk.csv": RISK_PATH.exists(),
+            "historical_risk_daily.csv": HIST_DAILY_PATH.exists(),
+            "historical_risk_monthly.csv": HIST_MONTHLY_PATH.exists(),
+            "historical_risk_yearly.csv": HIST_YEARLY_PATH.exists(),
+        }
+        st.json(files)
 
-st.write(
-    """
-    Core risk は GAM による主リスクです。
-    モデル式は `presence ~ s(Jday, bs="cc") + s(SST) + s(depth_m)` です。
 
-    Integrated risk は実験的な総合スコアです。
+check_password()
 
-    Integrated risk = 0.75 × Core GAM risk + 0.15 × Kuroshio context + 0.10 × Upwelling context
+st.title("Kochi Whale Shark Risk Monitor")
+st.caption("高知県沿岸の定置網におけるジンベエザメ出現リスクモニター v0.4")
 
-    現在の将来予測では、SSTは実測予報値ではなく、過去データから推定した同時期の季節値を使っています。
-    そのため、3〜30日後の予測は「季節性にもとづく参考リスク」として解釈してください。
+forecast, latest, hist_daily, hist_monthly, hist_yearly = load_all_data()
 
-    Core GAM risk を主指標として扱い、Integrated risk は補助的に解釈してください。
-    """
-)
+tab_now, tab_hist_day, tab_hist_month, tab_hist_year, tab_about = st.tabs([
+    "現在・予報",
+    "過去 日別",
+    "過去 月別",
+    "過去 年別",
+    "説明・ログ",
+])
+
+with tab_now:
+    show_current_forecast_tab(forecast, latest)
+
+with tab_hist_day:
+    show_historical_daily_tab(hist_daily)
+
+with tab_hist_month:
+    show_historical_monthly_tab(hist_monthly)
+
+with tab_hist_year:
+    show_historical_yearly_tab(hist_yearly)
+
+with tab_about:
+    st.header("Model notes")
+    st.markdown(
+        """
+        - Main model: **GAM: Jday + SST + depth**
+        - Historical risk: based on historical **NOAA OISST**, Julian day, and depth.
+        - Historical daily risk is calculated for fixed set-net locations.
+        - Monthly and yearly historical risks are averages of daily historical risks.
+        - Kuroshio and upwelling contexts are not included in the historical mode at this stage.
+        """
+    )
+    show_update_log()
