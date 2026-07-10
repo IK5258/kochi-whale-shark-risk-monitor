@@ -11,3 +11,6 @@ app_backup_*.py
 
 # Intermediate historical environment data
 outputs/historical_env_daily.csv
+
+# Local script backups
+scripts/*_backup_*.py
