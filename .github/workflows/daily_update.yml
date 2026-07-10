@@ -9,6 +9,14 @@ on:
 permissions:
   contents: write
 
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-whale-shark-update-main
+  cancel-in-progress: false
+
 jobs:
   update-risk:
     runs-on: ubuntu-latest
@@ -97,9 +105,9 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git rm -r --cached data/raw_copernicus_forecast || true
-          git rm -r --cached data/raw_kuroshio || true
-          git rm --cached "*.nc" || true
+          git rm -r --cached data/raw_copernicus_forecast 2>/dev/null || true
+          git rm -r --cached data/raw_kuroshio 2>/dev/null || true
+          git rm --cached "*.nc" 2>/dev/null || true
 
           git add .github/workflows/daily_update.yml
           git add requirements.txt
@@ -115,5 +123,14 @@ jobs:
           git add outputs/model_metrics.csv
           git add outputs/update_log.csv || true
 
-          git commit -m "Daily whale shark risk update" || echo "No changes to commit"
-          git push
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m "Daily whale shark risk update"
+
+          git fetch origin main
+          git rebase origin/main
+
+          git push origin HEAD:main
