@@ -80,15 +80,81 @@ def main():
 
     if NET_NAME_PATH.exists():
         names = pd.read_csv(NET_NAME_PATH)
-        name_netid_col = pick_col(names, ["NetID", "net_id", "net"])
-        name_col = pick_col(names, ["net_name", "Name", "name", "net_label"], required=False)
 
-        names = names.rename(columns={name_netid_col: "NetID"})
-        names["NetID"] = names["NetID"].astype(str)
+        name_netid_col = pick_col(
+            names,
+            ["NetID", "net_id", "netid", "ID", "id"]
+        )
 
-        if name_col is not None:
-            names = names.rename(columns={name_col: "net_name"})
-            nets = nets.merge(names[["NetID", "net_name"]], on="NetID", how="left")
+        candidate_name_cols = [
+            c for c in names.columns
+            if c != name_netid_col
+        ]
+
+        name_scores = {}
+
+        for c in candidate_name_cols:
+            values = names[c].dropna().astype(str).str.strip()
+
+            if len(values) == 0:
+                continue
+
+            non_numeric_ratio = (
+                ~values.str.fullmatch(r"[-+]?\\d+(\\.\\d+)?")
+            ).mean()
+
+            col_lower = str(c).lower()
+            keyword_bonus = 1 if any(
+                k in col_lower
+                for k in [
+                    "net_name", "name", "label",
+                    "定置", "網名", "漁場", "名称"
+                ]
+            ) else 0
+
+            name_scores[c] = non_numeric_ratio + keyword_bonus
+
+        if not name_scores:
+            raise ValueError(
+                f"No set-net name column found: {names.columns.tolist()}"
+            )
+
+        name_col = max(name_scores, key=name_scores.get)
+
+        names = names.rename(
+            columns={
+                name_netid_col: "NetID",
+                name_col: "net_name"
+            }
+        )
+
+        names["NetID"] = (
+            names["NetID"]
+            .astype(str)
+            .str.strip()
+            .str.replace(r"\\.0$", "", regex=True)
+        )
+
+        names["net_name"] = (
+            names["net_name"]
+            .astype(str)
+            .str.strip()
+        )
+
+        names = names[
+            ["NetID", "net_name"]
+        ].drop_duplicates("NetID")
+
+        nets = nets.drop(
+            columns=["net_name"],
+            errors="ignore"
+        )
+
+        nets = nets.merge(
+            names,
+            on="NetID",
+            how="left"
+        )
 
     if "net_name" not in nets.columns:
         nets["net_name"] = nets["NetID"]
