@@ -13,7 +13,7 @@ FORECAST_ENV_PATH = APP_ROOT / "outputs" / "forecast_env.csv"
 OUT_PATH = APP_ROOT / "outputs" / "forecast_env.csv"
 RAW_DIR = APP_ROOT / "data" / "raw_copernicus_forecast"
 
-FORECAST_DAYS_REAL = [0, 3, 7, 10]
+FORECAST_DAYS_REAL = [0, 3, 7]
 
 LON_MIN = 131.5
 LON_MAX = 136.0
@@ -22,17 +22,14 @@ LAT_MAX = 34.5
 
 TEMP_DATASETS = [
     "cmems_mod_glo_phy-thetao_anfc_0.083deg_P1D-m",
-    "cmems_mod_glo_phy_anfc_0.083deg_P1D-m",
 ]
 
 CUR_DATASETS = [
     "cmems_mod_glo_phy-cur_anfc_0.083deg_P1D-m",
-    "cmems_mod_glo_phy_anfc_0.083deg_P1D-m",
 ]
 
 WCUR_DATASETS = [
     "cmems_mod_glo_phy-wcur_anfc_0.083deg_P1D-m",
-    "cmems_mod_glo_phy_anfc_0.083deg_P1D-m",
 ]
 
 
@@ -82,8 +79,8 @@ def subset_one_dataset(dataset_id, variables, start_date, end_date, output_filen
         maximum_longitude=LON_MAX,
         minimum_latitude=LAT_MIN,
         maximum_latitude=LAT_MAX,
-        minimum_depth=0,
-        maximum_depth=1,
+        minimum_depth=0.49402499198913574,
+        maximum_depth=0.49402499198913574,
         start_datetime=str(start_date),
         end_datetime=str(end_date),
         output_directory=str(RAW_DIR),
@@ -253,7 +250,7 @@ def main():
     target_rows = forecast["offset_days"].isin(FORECAST_DAYS_REAL)
 
     if target_rows.sum() == 0:
-        raise ValueError("forecast_env.csv に 0/3/7/10日の行がありません。")
+        raise ValueError("forecast_env.csv に Copernicus実予報対象日の行がありません。")
 
     temp_path = subset_with_fallback(
         TEMP_DATASETS,
