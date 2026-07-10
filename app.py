@@ -210,7 +210,8 @@ def show_risk_map(df, title="Risk map"):
         Risk: {_risk_value}<br/>
         Class: {_risk_class}<br/>
         SST: {SST}<br/>
-        Depth: {depth_m} m
+        Depth: {depth_m} m<br/>
+        CHL: {CHL_monthly} mg m⁻³
         """,
         "style": {
             "backgroundColor": "white",
@@ -243,6 +244,8 @@ def show_table(df):
         "Jday",
         "SST",
         "depth_m",
+        "CHL_monthly",
+        "CHL_log10",
         "core_risk",
         "core_percentile",
         "core_risk_class",

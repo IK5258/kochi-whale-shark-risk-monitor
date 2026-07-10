@@ -72,6 +72,12 @@ df <- rename_first(df, c("Presence", "presence", "pa", "PA", "occurrence"), "pre
 df <- rename_first(df, c("Jday", "jday", "Julian_day", "julian_day"), "Jday", required = TRUE)
 df <- rename_first(df, c("SST", "sst", "SST_C", "sst_C"), "SST", required = TRUE)
 df <- rename_first(df, c("depth_m", "Depth_m", "depth", "Depth", "bathymetry_m"), "depth_m", required = TRUE)
+df <- rename_first(
+  df,
+  c("COP_CHL_log10_raw", "COP_CHL_qc_log10", "COP_CHL_log10_qc"),
+  "CHL_log10",
+  required = TRUE
+)
 
 cur <- rename_first(cur, c("NetID", "net_id", "net"), "NetID", required = TRUE)
 cur <- rename_first(cur, c("Latitude", "latitude", "lat", "Lat"), "Latitude", required = TRUE)
@@ -79,19 +85,27 @@ cur <- rename_first(cur, c("Longitude", "longitude", "lon", "Lon"), "Longitude",
 cur <- rename_first(cur, c("Jday", "jday", "Julian_day", "julian_day"), "Jday", required = TRUE)
 cur <- rename_first(cur, c("SST", "sst", "SST_C", "sst_C"), "SST", required = TRUE)
 cur <- rename_first(cur, c("depth_m", "Depth_m", "depth", "Depth", "bathymetry_m"), "depth_m", required = TRUE)
+cur <- rename_first(
+  cur,
+  c("CHL_log10", "COP_CHL_log10_raw"),
+  "CHL_log10",
+  required = TRUE
+)
 
 df <- df %>%
   mutate(
     presence = as.integer(presence),
     Jday = as.numeric(Jday),
     SST = as.numeric(SST),
-    depth_m = abs(as.numeric(depth_m))
+    depth_m = abs(as.numeric(depth_m)),
+    CHL_log10 = as.numeric(CHL_log10)
   ) %>%
   filter(
     presence %in% c(0, 1),
     !is.na(Jday),
     !is.na(SST),
-    !is.na(depth_m)
+    !is.na(depth_m),
+    !is.na(CHL_log10)
   )
 
 cur <- cur %>%
@@ -100,6 +114,7 @@ cur <- cur %>%
     Jday = as.numeric(Jday),
     SST = as.numeric(SST),
     depth_m = abs(as.numeric(depth_m)),
+    CHL_log10 = as.numeric(CHL_log10),
     Latitude = as.numeric(Latitude),
     Longitude = as.numeric(Longitude)
   )
@@ -112,11 +127,19 @@ if (any(is.na(cur$depth_m))) {
   cur$depth_m[is.na(cur$depth_m)] <- median(df$depth_m, na.rm = TRUE)
 }
 
+if (any(is.na(cur$CHL_log10))) {
+  cur$CHL_log10[is.na(cur$CHL_log10)] <- median(df$CHL_log10, na.rm = TRUE)
+}
+
 df$Jday <- pmin(pmax(df$Jday, 1), 366)
 cur$Jday <- pmin(pmax(cur$Jday, 1), 366)
 
 gam_fit <- gam(
-  presence ~ s(Jday, bs = "cc", k = 12) + s(SST, k = 8) + s(depth_m, k = 8),
+  presence ~
+    s(Jday, bs = "cc", k = 12) +
+    s(SST, k = 8) +
+    s(depth_m, k = 8) +
+    s(CHL_log10, k = 8),
   data = df,
   family = binomial,
   method = "REML",
@@ -135,7 +158,7 @@ df_mx <- df %>%
     Jday_sin = sin(2 * pi * Jday / 366),
     Jday_cos = cos(2 * pi * Jday / 366)
   ) %>%
-  select(presence, Jday_sin, Jday_cos, SST, depth_m) %>%
+  select(presence, Jday_sin, Jday_cos, SST, depth_m, CHL_log10) %>%
   filter(complete.cases(.))
 
 cur_mx <- cur %>%
@@ -149,7 +172,7 @@ maxent_source <- "glm_maxent_like"
 if (requireNamespace("maxnet", quietly = TRUE)) {
   maxent_source <- "maxnet_lq"
 
-  mx_x <- df_mx %>% select(Jday_sin, Jday_cos, SST, depth_m)
+  mx_x <- df_mx %>% select(Jday_sin, Jday_cos, SST, depth_m, CHL_log10)
   mx_p <- df_mx$presence
 
   mx_fit <- maxnet::maxnet(
@@ -162,14 +185,18 @@ if (requireNamespace("maxnet", quietly = TRUE)) {
   cur$maxent_suitability <- as.numeric(
     predict(
       mx_fit,
-      newdata = cur_mx %>% select(Jday_sin, Jday_cos, SST, depth_m),
+      newdata = cur_mx %>% select(Jday_sin, Jday_cos, SST, depth_m, CHL_log10),
       type = "cloglog"
     )
   )
 
 } else {
   mx_fit <- glm(
-    presence ~ Jday_sin + Jday_cos + poly(SST, 2, raw = TRUE) + poly(depth_m, 2, raw = TRUE),
+    presence ~
+      Jday_sin + Jday_cos +
+      poly(SST, 2, raw = TRUE) +
+      poly(depth_m, 2, raw = TRUE) +
+      poly(CHL_log10, 2, raw = TRUE),
     data = df_mx,
     family = binomial
   )
@@ -184,11 +211,11 @@ cur <- cur %>%
     integrated_risk = core_risk,
     integrated_percentile_today = core_percentile,
     integrated_risk_class = core_risk_class,
-    model_main = "GAM: Jday + SST + depth",
+    model_main = "GAM: Jday + SST + depth + log10(CHL)",
     maxent_source = maxent_source,
     forecast_ocean_mode = "historical_oisst",
     ocean_forecast_source = "NOAA OISST historical",
-    note = "Historical risk is based on OISST, Jday, and GEBCO depth. Kuroshio and upwelling contexts are not included."
+    note = "Historical risk is based on OISST, Jday, GEBCO depth, and monthly chlorophyll-a. Kuroshio and upwelling contexts are not included."
   )
 
 if (!("date" %in% names(cur)) && "Date" %in% names(cur)) {
@@ -230,7 +257,7 @@ monthly <- daily %>%
     core_risk_class = risk_class_from_percentile(core_percentile),
     integrated_risk_class = risk_class_from_percentile(integrated_percentile_today),
     period_label = sprintf("%04d-%02d", Year, Month),
-    model_main = "GAM: Jday + SST + depth",
+    model_main = "GAM: Jday + SST + depth + log10(CHL)",
     maxent_source = maxent_source,
     forecast_ocean_mode = "historical_oisst_monthly_mean",
     ocean_forecast_source = "NOAA OISST historical",
@@ -257,7 +284,7 @@ yearly <- daily %>%
     core_risk_class = risk_class_from_percentile(core_percentile),
     integrated_risk_class = risk_class_from_percentile(integrated_percentile_today),
     period_label = as.character(Year),
-    model_main = "GAM: Jday + SST + depth",
+    model_main = "GAM: Jday + SST + depth + log10(CHL)",
     maxent_source = maxent_source,
     forecast_ocean_mode = "historical_oisst_yearly_mean",
     ocean_forecast_source = "NOAA OISST historical",
