@@ -1,6 +1,8 @@
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import os
+import time
+import traceback
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -56,21 +58,37 @@ def get_depth_name(ds):
     return None
 
 
-def subset_one_dataset(dataset_id, variables, start_date, end_date, output_filename):
+
+def subset_one_dataset(
+    dataset_id,
+    variables,
+    start_date,
+    end_date,
+    output_filename,
+    max_attempts=3,
+):
     username = os.environ.get("CMEMS_USERNAME", "")
     password = os.environ.get("CMEMS_PASSWORD", "")
 
     if not username or not password:
-        raise RuntimeError("CMEMS_USERNAME / CMEMS_PASSWORD が設定されていません。")
+        raise RuntimeError(
+            "CMEMS_USERNAME / CMEMS_PASSWORD "
+            "が設定されていません。"
+        )
 
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    RAW_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     output_path = RAW_DIR / output_filename
-    if output_path.exists():
-        output_path.unlink()
 
+    print("=" * 70)
     print("Downloading dataset:", dataset_id)
     print("Variables:", variables)
+    print("Start date:", start_date)
+    print("End date:", end_date)
+    print("Output:", output_path)
 
     kwargs = dict(
         dataset_id=dataset_id,
@@ -79,34 +97,131 @@ def subset_one_dataset(dataset_id, variables, start_date, end_date, output_filen
         maximum_longitude=LON_MAX,
         minimum_latitude=LAT_MIN,
         maximum_latitude=LAT_MAX,
+
+        # Copernicus全球予報データの最浅層
         minimum_depth=0.49402499198913574,
         maximum_depth=0.49402499198913574,
-        start_datetime=str(start_date),
-        end_datetime=str(end_date),
+
+        start_datetime=f"{start_date}T00:00:00",
+        end_datetime=f"{end_date}T23:59:59",
+
         output_directory=str(RAW_DIR),
         output_filename=output_filename,
         file_format="netcdf",
+
         username=username,
         password=password,
+
         disable_progress_bar=True,
+        overwrite=True,
     )
 
-    try:
-        copernicusmarine.subset(**kwargs, overwrite=True)
-    except TypeError:
-        copernicusmarine.subset(**kwargs)
+    last_error = None
 
-    if output_path.exists():
-        return output_path
+    for attempt in range(1, max_attempts + 1):
 
-    candidates = list(RAW_DIR.glob(output_filename + "*"))
-    if candidates:
-        return candidates[0]
+        # 前回の不完全ファイルを削除
+        for old_file in RAW_DIR.glob(
+            output_filename + "*"
+        ):
+            if old_file.is_file():
+                old_file.unlink()
 
-    raise FileNotFoundError(f"Downloaded file not found: {output_path}")
+        print(
+            f"Attempt {attempt}/{max_attempts}"
+        )
+
+        try:
+            result = copernicusmarine.subset(
+                **kwargs
+            )
+
+            print("Subset result:", result)
+
+            if (
+                output_path.exists()
+                and output_path.stat().st_size > 0
+            ):
+                print(
+                    "Downloaded:",
+                    output_path,
+                    output_path.stat().st_size,
+                    "bytes",
+                )
+                return output_path
+
+            candidates = [
+                path
+                for path in RAW_DIR.glob(
+                    output_filename + "*"
+                )
+                if (
+                    path.is_file()
+                    and path.suffix == ".nc"
+                    and path.stat().st_size > 0
+                )
+            ]
+
+            if candidates:
+                print(
+                    "Downloaded:",
+                    candidates[0],
+                )
+                return candidates[0]
+
+            raise FileNotFoundError(
+                "Downloaded NetCDF file "
+                f"not found: {output_path}"
+            )
+
+        except Exception as exc:
+            last_error = exc
+
+            print(
+                f"Attempt {attempt} failed"
+            )
+            print(
+                "Exception type:",
+                type(exc).__name__,
+            )
+            print(
+                "Exception str:",
+                str(exc),
+            )
+            print(
+                "Exception repr:",
+                repr(exc),
+            )
+
+            traceback.print_exc()
+
+            if attempt < max_attempts:
+                wait_seconds = 30 * attempt
+
+                print(
+                    "Retrying after",
+                    wait_seconds,
+                    "seconds..."
+                )
+
+                time.sleep(wait_seconds)
+
+    raise RuntimeError(
+        f"Dataset download failed after "
+        f"{max_attempts} attempts: "
+        f"{dataset_id}; "
+        f"{type(last_error).__name__}: "
+        f"{last_error!r}"
+    ) from last_error
 
 
-def subset_with_fallback(dataset_ids, variables, start_date, end_date, output_filename):
+def subset_with_fallback(
+    dataset_ids,
+    variables,
+    start_date,
+    end_date,
+    output_filename,
+):
     errors = []
 
     for dataset_id in dataset_ids:
@@ -118,12 +233,34 @@ def subset_with_fallback(dataset_ids, variables, start_date, end_date, output_fi
                 end_date=end_date,
                 output_filename=output_filename,
             )
-        except Exception as e:
-            print("Failed:", dataset_id)
-            print(e)
-            errors.append((dataset_id, str(e)))
 
-    raise RuntimeError(f"All candidate datasets failed: {errors}")
+        except Exception as exc:
+            print(
+                "Failed dataset:",
+                dataset_id,
+            )
+            print(
+                "Exception type:",
+                type(exc).__name__,
+            )
+            print(
+                "Exception repr:",
+                repr(exc),
+            )
+
+            errors.append(
+                (
+                    dataset_id,
+                    type(exc).__name__,
+                    repr(exc),
+                )
+            )
+
+    raise RuntimeError(
+        "All candidate datasets failed: "
+        f"{errors}"
+    )
+
 
 
 def get_surface_da(ds, var, target_date):
@@ -142,34 +279,130 @@ def get_surface_da(ds, var, target_date):
     return da
 
 
-def value_at_point(da, lat, lon):
+def value_at_point(
+    da,
+    lat,
+    lon,
+    max_search_km=30.0,
+):
+    """
+    Return the value at the nearest grid cell.
+
+    If the nearest cell is NaN, search all valid ocean cells
+    and use the geographically nearest valid value within
+    max_search_km.
+    """
     ds = da.to_dataset(name="tmp")
 
-    lat_name = find_coord_name(ds, ["latitude", "lat"])
-    lon_name = find_coord_name(ds, ["longitude", "lon"])
+    lat_name = find_coord_name(
+        ds,
+        ["latitude", "lat"],
+    )
+    lon_name = find_coord_name(
+        ds,
+        ["longitude", "lon"],
+    )
 
-    try:
-        val = da.interp(
-            {
-                lat_name: float(lat),
-                lon_name: float(lon),
-            }
-        ).values
-    except Exception:
-        val = da.sel(
-            {
-                lat_name: float(lat),
-                lon_name: float(lon),
-            },
-            method="nearest"
-        ).values
+    # First try the ordinary nearest grid cell
+    nearest = da.sel(
+        {
+            lat_name: float(lat),
+            lon_name: float(lon),
+        },
+        method="nearest",
+    )
 
-    arr = np.asarray(val).astype(float)
+    nearest_array = np.asarray(
+        nearest.values
+    ).squeeze()
 
-    if arr.size == 0:
+    if nearest_array.size == 1:
+        nearest_value = float(nearest_array)
+
+        if np.isfinite(nearest_value):
+            return nearest_value
+
+    # Remove any remaining singleton dimensions
+    da_2d = da.squeeze(drop=True)
+
+    if (
+        lat_name not in da_2d.dims
+        or lon_name not in da_2d.dims
+    ):
         return np.nan
 
-    return float(np.nanmean(arr))
+    da_2d = da_2d.transpose(
+        lat_name,
+        lon_name,
+    )
+
+    values = np.asarray(
+        da_2d.values,
+        dtype=float,
+    )
+
+    lat_values = np.asarray(
+        da_2d[lat_name].values,
+        dtype=float,
+    )
+    lon_values = np.asarray(
+        da_2d[lon_name].values,
+        dtype=float,
+    )
+
+    lat_grid, lon_grid = np.meshgrid(
+        lat_values,
+        lon_values,
+        indexing="ij",
+    )
+
+    # Approximate geographic distance in kilometres
+    mean_lat_rad = np.deg2rad(
+        (lat_grid + float(lat)) / 2.0
+    )
+
+    dy_km = (
+        lat_grid - float(lat)
+    ) * 111.32
+
+    dx_km = (
+        lon_grid - float(lon)
+    ) * 111.32 * np.cos(mean_lat_rad)
+
+    distance_km = np.sqrt(
+        dx_km ** 2 + dy_km ** 2
+    )
+
+    valid = np.isfinite(values)
+
+    if not np.any(valid):
+        return np.nan
+
+    distance_valid = np.where(
+        valid,
+        distance_km,
+        np.inf,
+    )
+
+    flat_index = int(
+        np.argmin(distance_valid)
+    )
+
+    nearest_valid_distance = float(
+        distance_valid.flat[flat_index]
+    )
+
+    if (
+        not np.isfinite(nearest_valid_distance)
+        or nearest_valid_distance > max_search_km
+    ):
+        return np.nan
+
+    nearest_valid_value = float(
+        values.flat[flat_index]
+    )
+
+    return nearest_valid_value
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -252,29 +485,69 @@ def main():
     if target_rows.sum() == 0:
         raise ValueError("forecast_env.csv に Copernicus実予報対象日の行がありません。")
 
-    temp_path = subset_with_fallback(
-        TEMP_DATASETS,
-        ["thetao"],
-        base_date,
-        max_date,
-        "copernicus_thetao_surface_forecast.nc",
+    print(
+        "copernicusmarine version:",
+        copernicusmarine.__version__,
     )
 
-    cur_path = subset_with_fallback(
-        CUR_DATASETS,
-        ["uo", "vo"],
-        base_date,
-        max_date,
-        "copernicus_current_surface_forecast.nc",
-    )
+    try:
+        temp_path = subset_with_fallback(
+            TEMP_DATASETS,
+            ["thetao"],
+            base_date,
+            max_date,
+            "copernicus_thetao_surface_forecast.nc",
+        )
 
-    wcur_path = subset_with_fallback(
-        WCUR_DATASETS,
-        ["wo"],
-        base_date,
-        max_date,
-        "copernicus_vertical_current_surface_forecast.nc",
-    )
+        cur_path = subset_with_fallback(
+            CUR_DATASETS,
+            ["uo", "vo"],
+            base_date,
+            max_date,
+            "copernicus_current_surface_forecast.nc",
+        )
+
+        wcur_path = subset_with_fallback(
+            WCUR_DATASETS,
+            ["wo"],
+            base_date,
+            max_date,
+            "copernicus_vertical_current_surface_forecast.nc",
+        )
+
+    except Exception as exc:
+        print("=" * 70)
+        print(
+            "WARNING: Copernicus forecast "
+            "download failed."
+        )
+        print(
+            "Exception type:",
+            type(exc).__name__,
+        )
+        print(
+            "Exception str:",
+            str(exc),
+        )
+        print(
+            "Exception repr:",
+            repr(exc),
+        )
+
+        traceback.print_exc()
+
+        print(
+            "The seasonal-climatology "
+            "forecast_env.csv created in the "
+            "previous workflow step will be retained."
+        )
+        print(
+            "The workflow will continue to "
+            "forecast-risk prediction."
+        )
+        print("=" * 70)
+
+        return
 
     print("Open datasets")
     ds_temp = xr.open_dataset(temp_path)

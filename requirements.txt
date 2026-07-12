@@ -2,7 +2,7 @@ streamlit
 pandas
 numpy==1.26.4
 pydeck
-copernicusmarine
+copernicusmarine==2.3.0
 xarray
 netCDF4
 h5py
