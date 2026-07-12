@@ -8,6 +8,7 @@ APP_ROOT = Path(os.environ.get("APP_ROOT", Path(__file__).resolve().parents[1]))
 
 MASTER_PATH = APP_ROOT / "data" / "WhaleShark_env_master.csv"
 OUT_PATH = APP_ROOT / "data" / "net_master.csv"
+NAME_PATH = APP_ROOT / "data" / "net_name_master.csv"
 
 
 def pick_col(df, candidates, required=True):
@@ -159,6 +160,103 @@ def main():
 
     if "retention_proxy" not in net.columns:
         net["retention_proxy"] = np.nan
+
+    # 定置網の正式名称をNetIDで結合
+    if NAME_PATH.exists():
+        names = pd.read_csv(NAME_PATH)
+
+        # BOMや列名周辺の空白を除去
+        names.columns = [
+            str(c).replace("\ufeff", "").strip()
+            for c in names.columns
+        ]
+
+        if "NetID" not in names.columns:
+            raise ValueError(
+                f"NetID column is missing from: {NAME_PATH}"
+            )
+
+        if "net_name" not in names.columns:
+            raise ValueError(
+                f"net_name column is missing from: {NAME_PATH}"
+            )
+
+        names["NetID"] = (
+            names["NetID"]
+            .astype(str)
+            .str.replace(r"\\.0$", "", regex=True)
+            .str.strip()
+        )
+
+        names["net_name"] = (
+            names["net_name"]
+            .astype(str)
+            .str.strip()
+        )
+
+        names = (
+            names[["NetID", "net_name"]]
+            .dropna(subset=["NetID", "net_name"])
+            .drop_duplicates(subset=["NetID"])
+        )
+
+        # 以前の仮名称があっても、正式名称で置き換える
+        net = net.drop(
+            columns=["net_name", "net_label"],
+            errors="ignore",
+        )
+
+        net = net.merge(
+            names,
+            on="NetID",
+            how="left",
+            validate="one_to_one",
+        )
+
+    else:
+        print(
+            "WARNING: net_name_master.csv was not found:",
+            NAME_PATH,
+        )
+
+        if "net_name" not in net.columns:
+            net["net_name"] = np.nan
+
+    # 名称がない場合のみNetIDを代替表示
+    missing_name = (
+        net["net_name"].isna()
+        | net["net_name"].astype(str).str.strip().eq("")
+        | net["net_name"].astype(str).str.lower().eq("nan")
+    )
+
+    net.loc[
+        missing_name,
+        "net_name",
+    ] = (
+        "NetID "
+        + net.loc[missing_name, "NetID"].astype(str)
+    )
+
+    net["net_label"] = (
+        net["net_name"].astype(str)
+        + "（NetID "
+        + net["NetID"].astype(str)
+        + "）"
+    )
+
+    # NetIDを数値順に並べる
+    net["_net_sort"] = pd.to_numeric(
+        net["NetID"],
+        errors="coerce",
+    )
+
+    net = (
+        net.sort_values(
+            ["_net_sort", "NetID"]
+        )
+        .drop(columns="_net_sort")
+        .reset_index(drop=True)
+    )
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     net.to_csv(OUT_PATH, index=False, encoding="utf-8-sig")
