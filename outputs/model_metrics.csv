@@ -1,2 +1,2 @@
 n_train,n_presence,n_background,gam_formula,maxent_source,has_kuroshio,forecast_offsets,integrated_formula,created_at
-3300,300,3000,"presence ~ s(Jday, bs='cc') + s(SST) + s(depth_m)",maxnet_lq,TRUE,"0,3,7,10,14,30",0.75 core + 0.15 kuroshio + 0.10 upwelling,2026-07-17 07:37:56
+3300,300,3000,"presence ~ s(Jday, bs='cc') + s(SST) + s(depth_m)",maxnet_lq,TRUE,"0,3,7,10,14,30",0.75 core + 0.15 kuroshio + 0.10 upwelling,2026-07-18 06:36:31
