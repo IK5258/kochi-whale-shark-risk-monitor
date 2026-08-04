@@ -2,8 +2,13 @@ name: Daily whale shark risk update
 
 on:
   schedule:
-    # JST 08:00 = UTC 23:00
-    - cron: "0 23 * * *"
+    # JST 08:17 = UTC 23:17
+    - cron: "17 23 * * *"
+
+    # 予備実行：JST 09:47 = UTC 00:47
+    - cron: "47 0 * * *"
+
+  # GitHub Actions画面から手動実行可能
   workflow_dispatch:
 
 permissions:
@@ -76,10 +81,12 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
+          # 大容量の一時ファイルやNetCDFをGit管理対象から外す
           git rm -r --cached data/raw_copernicus_forecast 2>/dev/null || true
           git rm -r --cached data/raw_kuroshio 2>/dev/null || true
           git rm --cached "*.nc" 2>/dev/null || true
 
+          # 更新対象ファイルを追加
           git add data/kuroshio_axis.csv
           git add data/net_master.csv
           git add outputs/current_env.csv
@@ -89,6 +96,7 @@ jobs:
           git add outputs/model_metrics.csv
           git add outputs/update_log.csv || true
 
+          # 差分がない場合は正常終了
           if git diff --cached --quiet; then
             echo "No changes to commit"
             exit 0
@@ -96,6 +104,9 @@ jobs:
 
           git commit -m "Daily whale shark risk update"
 
+          # 他の更新と競合した場合に備えて最新mainへrebase
           git fetch origin main
           git rebase origin/main
+
+          # mainブランチへ反映
           git push origin HEAD:main
