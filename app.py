@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import pydeck as pdk
+from urllib.parse import urlencode
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -15,6 +16,16 @@ LOG_PATH = APP_ROOT / "outputs" / "update_log.csv"
 HIST_DAILY_PATH = APP_ROOT / "outputs" / "historical_risk_daily.csv"
 HIST_MONTHLY_PATH = APP_ROOT / "outputs" / "historical_risk_monthly.csv"
 HIST_YEARLY_PATH = APP_ROOT / "outputs" / "historical_risk_yearly.csv"
+
+# Fixed map extent covering Kochi and the adjacent Pacific slope.  The risk
+# points retain their J-EGG500 depth values; this image is only a regional
+# bathymetric backdrop to make the seafloor gradient visible.
+BATHYMETRY_BOUNDS = [131.5, 31.5, 135.5, 34.5]  # west, south, east, north
+GEBCO_WMS_URL = "https://wms.gebco.net/mapserv"
+GEBCO_ATTRIBUTION = (
+    "Imagery reproduced from the GEBCO_2026 Grid, "
+    "GEBCO Bathymetric Compilation Group (2026)."
+)
 
 st.set_page_config(
     page_title="Kochi Whale Shark Risk Monitor",
@@ -185,7 +196,7 @@ def show_risk_map(df, title="Risk map"):
     center_lat = float(d["Latitude"].mean())
     center_lon = float(d["Longitude"].mean())
 
-    layer = pdk.Layer(
+    risk_layer = pdk.Layer(
         "ScatterplotLayer",
         data=d,
         get_position="[Longitude, Latitude]",
@@ -195,6 +206,42 @@ def show_risk_map(df, title="Risk map"):
         pickable=True,
         auto_highlight=True,
     )
+
+    show_bathymetry = st.toggle(
+        "海底水深の勾配を表示",
+        value=True,
+        key=f"bathymetry_{title}",
+        help="背景はGEBCO 2026、各定置網の解析用水深はJ-EGG500です。",
+    )
+
+    layers = []
+    if show_bathymetry:
+        wms_params = {
+            "service": "WMS",
+            "version": "1.1.1",
+            "request": "GetMap",
+            "layers": "GEBCO_LATEST",
+            "styles": "default",
+            "format": "image/png",
+            "transparent": "true",
+            "srs": "EPSG:4326",
+            "bbox": ",".join(map(str, BATHYMETRY_BOUNDS)),
+            "width": 1400,
+            "height": 1050,
+        }
+        bathymetry_url = f"{GEBCO_WMS_URL}?{urlencode(wms_params)}"
+        layers.append(
+            pdk.Layer(
+                "BitmapLayer",
+                data=None,
+                image=bathymetry_url,
+                bounds=BATHYMETRY_BOUNDS,
+                opacity=0.72,
+            )
+        )
+
+    # Always draw risk points last so they remain legible above bathymetry.
+    layers.append(risk_layer)
 
     view_state = pdk.ViewState(
         latitude=center_lat,
@@ -220,7 +267,7 @@ def show_risk_map(df, title="Risk map"):
     }
 
     deck = pdk.Deck(
-        layers=[layer],
+        layers=layers,
         initial_view_state=view_state,
         tooltip=tooltip,
         map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
@@ -228,6 +275,12 @@ def show_risk_map(df, title="Risk map"):
 
     st.subheader(title)
     st.pydeck_chart(deck, use_container_width=True)
+    if show_bathymetry:
+        st.caption(
+            "海底地形背景：GEBCO 2026（青が濃いほど深い）。"
+            "地点を選択すると解析に用いたJ-EGG500水深を確認できます。 "
+            + GEBCO_ATTRIBUTION
+        )
 
 
 def show_table(df):
@@ -453,7 +506,7 @@ def show_update_log():
 check_password()
 
 st.title("Kochi Whale Shark Risk Monitor")
-st.caption("高知県沿岸の定置網におけるジンベエザメ出現リスクモニター v0.5")
+st.caption("高知県沿岸の定置網におけるジンベエザメ出現リスクモニター v0.6")
 
 forecast, latest, hist_daily, hist_monthly, hist_yearly = load_all_data()
 
