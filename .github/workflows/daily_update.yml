@@ -50,7 +50,7 @@ jobs:
 
       - name: Install R packages
         run: |
-          Rscript -e 'install.packages(c("mgcv", "readr", "dplyr", "tibble", "maxnet"), repos="https://cloud.r-project.org")'
+          Rscript -e 'install.packages(c("mgcv", "readr", "dplyr", "tibble"), repos="https://cloud.r-project.org")'
 
       - name: Make net master
         run: |
@@ -76,6 +76,10 @@ jobs:
         run: |
           Rscript scripts/predict_forecast_risk.R
 
+      - name: Rebuild historical risk with the same model
+        run: |
+          Rscript scripts/predict_historical_risk.R
+
       - name: Commit updated outputs
         run: |
           git config user.name "github-actions"
@@ -94,6 +98,9 @@ jobs:
           git add outputs/forecast_env.csv
           git add outputs/forecast_risk.csv
           git add outputs/model_metrics.csv
+          git add outputs/historical_risk_daily.csv
+          git add outputs/historical_risk_monthly.csv
+          git add outputs/historical_risk_yearly.csv
           git add outputs/update_log.csv || true
 
           # 差分がない場合は正常終了

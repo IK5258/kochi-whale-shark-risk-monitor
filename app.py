@@ -85,14 +85,14 @@ def risk_class_to_color(cls):
 
 
 def get_risk_col(df):
-    for c in ["integrated_risk", "core_risk", "maxent_suitability"]:
+    for c in ["relative_risk_percentile", "core_percentile"]:
         if c in df.columns:
             return c
     return None
 
 
 def get_class_col(df):
-    for c in ["integrated_risk_class", "core_risk_class"]:
+    for c in ["relative_risk_class", "core_risk_class"]:
         if c in df.columns:
             return c
     return None
@@ -156,15 +156,15 @@ def show_metric_cards(df):
 
     with c2:
         if risk_col is not None:
-            st.metric("平均リスク", f"{pd.to_numeric(df[risk_col], errors='coerce').mean():.3f}")
+            st.metric("平均相対順位", f"{pd.to_numeric(df[risk_col], errors='coerce').mean():.1%}")
         else:
-            st.metric("平均リスク", "NA")
+            st.metric("平均相対順位", "NA")
 
     with c3:
         if risk_col is not None:
-            st.metric("最大リスク", f"{pd.to_numeric(df[risk_col], errors='coerce').max():.3f}")
+            st.metric("最大相対順位", f"{pd.to_numeric(df[risk_col], errors='coerce').max():.1%}")
         else:
-            st.metric("最大リスク", "NA")
+            st.metric("最大相対順位", "NA")
 
     with c4:
         if class_col is not None:
@@ -207,11 +207,11 @@ def show_risk_map(df, title="Risk map"):
         "html": """
         <b>{net_label}</b><br/>
         Date: {date}<br/>
-        Risk: {_risk_value}<br/>
+        Relative percentile: {_risk_value}<br/>
         Class: {_risk_class}<br/>
         SST: {SST}<br/>
-        Depth: {depth_m} m<br/>
-        CHL: {CHL_monthly} mg m⁻³
+        SST anomaly: {SST_anomaly} °C<br/>
+        J-EGG500 depth: {depth_m} m
         """,
         "style": {
             "backgroundColor": "white",
@@ -243,16 +243,19 @@ def show_table(df):
         "Longitude",
         "Jday",
         "SST",
+        "SST_climatology",
+        "SST_anomaly",
         "depth_m",
+        "GEBCO_old_m",
+        "depth_JEGG500_IDW_m",
+        "JEGG_quality",
         "CHL_monthly",
         "CHL_log10",
         "core_risk",
         "core_percentile",
         "core_risk_class",
-        "maxent_suitability",
-        "integrated_risk",
-        "integrated_percentile_today",
-        "integrated_risk_class",
+        "relative_risk_percentile",
+        "relative_risk_class",
         "model_main",
         "note",
     ]
@@ -285,8 +288,16 @@ def parse_date_col(df, col="date"):
     return d, "_date"
 
 
+def uses_current_model(df):
+    if df.empty or "model_main" not in df.columns:
+        return False
+    labels = df["model_main"].dropna().astype(str)
+    return (labels.str.contains("SST anomaly", case=False)).all() if len(labels) else False
+
+
 def show_current_forecast_tab(forecast, latest):
     st.header("現在・予報リスク")
+    st.info("表示値は固定した学習データ内での相対順位です。出現確率そのものではありません。")
 
     if not forecast.empty:
         df, date_col = parse_date_col(forecast, "target_date")
@@ -332,6 +343,9 @@ def show_historical_daily_tab(hist_daily):
     if hist_daily.empty:
         st.warning("historical_risk_daily.csv が見つかりません。")
         return
+    if not uses_current_model(hist_daily):
+        st.warning("履歴データは旧モデル版のため非表示です。GitHub Actions の次回実行後に更新されます。")
+        return
 
     df, date_col = parse_date_col(hist_daily, "date")
 
@@ -349,7 +363,7 @@ def show_historical_daily_tab(hist_daily):
 
     show = df[df[date_col] == selected_date].copy()
 
-    st.caption("Historical daily risk based on OISST, Jday, and depth.")
+    st.caption("OISST偏差、周期Jday、J-EGG500水深による日別の相対リスク順位。")
     show_metric_cards(show)
     show_risk_map(show, f"Historical daily risk: {selected_date}")
     show_table(show)
@@ -360,6 +374,9 @@ def show_historical_monthly_tab(hist_monthly):
 
     if hist_monthly.empty:
         st.warning("historical_risk_monthly.csv が見つかりません。")
+        return
+    if not uses_current_model(hist_monthly):
+        st.warning("履歴データは旧モデル版のため非表示です。GitHub Actions の次回実行後に更新されます。")
         return
 
     df = hist_monthly.copy()
@@ -383,7 +400,7 @@ def show_historical_monthly_tab(hist_monthly):
         (df["Month"] == selected_month)
     ].copy()
 
-    st.caption("Monthly historical risk is the mean of daily historical risks.")
+    st.caption("日別の相対リスク順位を月単位で平均した参考値です。")
     show_metric_cards(show)
     show_risk_map(show, f"Historical monthly risk: {selected_year}-{selected_month:02d}")
     show_table(show)
@@ -395,6 +412,9 @@ def show_historical_yearly_tab(hist_yearly):
     if hist_yearly.empty:
         st.warning("historical_risk_yearly.csv が見つかりません。")
         return
+    if not uses_current_model(hist_yearly):
+        st.warning("履歴データは旧モデル版のため非表示です。GitHub Actions の次回実行後に更新されます。")
+        return
 
     df = hist_yearly.copy()
     df["Year"] = pd.to_numeric(df["Year"], errors="coerce").astype("Int64")
@@ -405,7 +425,7 @@ def show_historical_yearly_tab(hist_yearly):
 
     show = df[df["Year"] == selected_year].copy()
 
-    st.caption("Yearly historical risk is the mean of daily historical risks.")
+    st.caption("日別の相対リスク順位を年単位で平均した参考値です。")
     show_metric_cards(show)
     show_risk_map(show, f"Historical yearly risk: {selected_year}")
     show_table(show)
@@ -433,7 +453,7 @@ def show_update_log():
 check_password()
 
 st.title("Kochi Whale Shark Risk Monitor")
-st.caption("高知県沿岸の定置網におけるジンベエザメ出現リスクモニター v0.4")
+st.caption("高知県沿岸の定置網におけるジンベエザメ出現リスクモニター v0.5")
 
 forecast, latest, hist_daily, hist_monthly, hist_yearly = load_all_data()
 
@@ -461,11 +481,12 @@ with tab_about:
     st.header("Model notes")
     st.markdown(
         """
-        - Main model: **GAM: Jday + SST + depth**
-        - Historical risk: based on historical **NOAA OISST**, Julian day, and depth.
-        - Historical daily risk is calculated for fixed set-net locations.
-        - Monthly and yearly historical risks are averages of daily historical risks.
-        - Kuroshio and upwelling contexts are not included in the historical mode at this stage.
+        - 主モデル：**周期Jday + SST偏差 + J-EGG500 IDW水深**（R `mgcv`, REML, `select=TRUE`）
+        - 表示値：固定学習データに対する**相対順位（percentile）**。絶対的な出現確率ではありません。
+        - 検証結果：見かけのAUC 0.904、LONO AUC 0.858 ± 0.075、AIC 1349.0、逸脱度説明率34.7%。
+        - 生SSTはJdayとのconcurvityが高かったため主モデルから除外し、SST偏差へ変更しました。
+        - 生SSTのみの感度解析では最適域は約23.2℃でした。
+        - 月別・年別値は日別相対順位の平均で、参考的な集約値です。
         """
     )
     show_update_log()

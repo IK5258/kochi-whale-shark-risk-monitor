@@ -221,7 +221,7 @@ def main():
     hist["NetID"] = hist["NetID"].astype(str)
     hist["net_label"] = hist["net_name"].astype(str) + " / NetID " + hist["NetID"].astype(str)
     hist["historical_mode"] = "daily_oisst"
-    hist["note"] = "Historical risk is based on OISST, Jday, and GEBCO depth. Kuroshio and upwelling contexts are not included."
+    hist["note"] = "Historical environment uses OISST; prediction uses SST anomaly, cyclic Jday, and J-EGG500 IDW depth."
 
     hist = hist.replace([np.inf, -np.inf], np.nan)
     hist = hist.dropna(subset=["Date", "Jday", "SST", "depth_m", "Latitude", "Longitude"])

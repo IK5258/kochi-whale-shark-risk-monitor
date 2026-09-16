@@ -24,6 +24,12 @@ NAME_PATH = (
     / "net_name_master.csv"
 )
 
+DEPTH_LOOKUP_PATH = (
+    APP_ROOT
+    / "data"
+    / "net_depth_jegg500.csv"
+)
+
 OUT_PATH = (
     APP_ROOT
     / "data"
@@ -63,6 +69,11 @@ def main():
     if not NAME_PATH.exists():
         raise FileNotFoundError(
             f"Net name master not found: {NAME_PATH}"
+        )
+
+    if not DEPTH_LOOKUP_PATH.exists():
+        raise FileNotFoundError(
+            f"J-EGG500 lookup not found: {DEPTH_LOOKUP_PATH}"
         )
 
     df = pd.read_csv(
@@ -276,6 +287,53 @@ def main():
     ]:
         if column not in net.columns:
             net[column] = np.nan
+
+    # Replace the older GEBCO-derived coordinates and depth with the
+    # fixed-fishing-right-checked coordinates and J-EGG500 IDW depth.
+    depth_lookup = pd.read_csv(
+        DEPTH_LOOKUP_PATH,
+        encoding="utf-8-sig",
+    )
+    depth_lookup["NetID"] = normalize_net_id(
+        depth_lookup["NetID"]
+    )
+    depth_lookup = depth_lookup[
+        [
+            "NetID",
+            "Latitude_final",
+            "Longitude_final",
+            "GEBCO_old_m",
+            "depth_JEGG500_IDW_m",
+            "JEGG_quality",
+        ]
+    ].drop_duplicates("NetID")
+
+    net = net.merge(
+        depth_lookup,
+        on="NetID",
+        how="left",
+        validate="one_to_one",
+    )
+
+    if net["depth_JEGG500_IDW_m"].isna().any():
+        missing = net.loc[
+            net["depth_JEGG500_IDW_m"].isna(),
+            "NetID",
+        ].tolist()
+        raise ValueError(
+            "Missing J-EGG500 depth for NetID: "
+            + ", ".join(missing)
+        )
+
+    net["Latitude"] = pd.to_numeric(
+        net["Latitude_final"], errors="raise"
+    )
+    net["Longitude"] = pd.to_numeric(
+        net["Longitude_final"], errors="raise"
+    )
+    net["depth_m"] = pd.to_numeric(
+        net["depth_JEGG500_IDW_m"], errors="raise"
+    ).abs()
 
     # 正式な定置網名を読み込む
     names = pd.read_csv(
