@@ -1,2 +1,2 @@
 n_train,n_presence,n_background,apparent_auc,aic,deviance_explained,validated_lono_auc_mean,validated_lono_auc_sd,gam_formula,depth_source,risk_scale,created_at
-3300,300,3000,0.9035227777777778,1349.0004504473982,0.3469912088415046,0.858,0.075,"presence ~ s(Jday, bs='cc', k=20) + s(SST_anomaly, k=10) + s(depth_m, k=10)",J-EGG500 IDW,fixed-reference percentile; not absolute probability,2026-09-17 01:29:33 UTC
+3300,300,3000,0.9035227777777778,1349.0004504473043,0.3469912088416557,0.858,0.075,"presence ~ s(Jday, bs='cc', k=20) + s(SST_anomaly, k=10) + s(depth_m, k=10)",J-EGG500 IDW,fixed-reference percentile; not absolute probability,2026-09-17 05:35:18 UTC
